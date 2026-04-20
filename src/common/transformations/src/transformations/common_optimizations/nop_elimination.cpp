@@ -170,7 +170,7 @@ static bool eliminate_reshape_v1(const std::shared_ptr<Node>& node) {
     if (input.get_partial_shape().is_dynamic() || node->get_output_partial_shape(0).is_dynamic()) {
         if (!only_first_dim_dynamic(input.get_partial_shape()) ||
             !only_first_dim_dynamic(node->get_output_partial_shape(0))) {
-            OPENVINO_DEBUG(node, " has dynamic shapes with not only 0th dimension dynamic.");
+            // OPENVINO_DEBUG(node, " has dynamic shapes with not only 0th dimension dynamic.");
             return false;
         }
     }

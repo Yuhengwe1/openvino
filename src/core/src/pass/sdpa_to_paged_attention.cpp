@@ -99,7 +99,7 @@ bool ov::pass::SDPAToPagedAttention::run_on_model(const std::shared_ptr<ov::Mode
 
     OPENVINO_ASSERT(input_ids_node, "The model doesn't contain input_ids or input_embeds input. Aborting.");
 
-    if (input_ids_node->get_friendly_name() == "input_ids") {
+    if (input_ids_node->get_friendly_name().rfind("input_ids", 0) == 0) {
         input_ids_node->set_partial_shape(PartialShape{-1});
     } else if (input_ids_node->get_friendly_name() == "inputs_embeds") {
         input_ids_node->set_partial_shape(PartialShape{-1, -1});

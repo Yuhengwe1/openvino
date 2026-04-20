@@ -61,8 +61,8 @@ FullyConnectedHorizontalFusion::FullyConnectedHorizontalFusion(bool fuse_mlp_swi
 
         const auto& fc = ov::as_type_ptr<op::FullyConnectedCompressed>(output.get_node_shared_ptr());
         const auto& input = fc->get_input_node_shared_ptr(0);
-        if (!fc->get_input_partial_shape(0).is_dynamic())
-            return false;
+        // if (!fc->get_input_partial_shape(0).is_dynamic())
+        //     return false;
         size_t user_fc_count = 0;
         int32_t nodes_with_bias = 0;
         int32_t nodes_with_zp = 0;
