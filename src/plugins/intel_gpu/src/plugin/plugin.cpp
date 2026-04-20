@@ -257,6 +257,7 @@ std::shared_ptr<ov::ICompiledModel> Plugin::compile_model(const std::shared_ptr<
 
     ExecutionConfig config = m_configs_map.at(device_id);
     config.set_user_property(orig_config, OptionVisibility::RELEASE);
+    // config.set_property(ov::enable_profiling(true));
 
     auto transformed_model = clone_and_transform_model(model, config, context);
 

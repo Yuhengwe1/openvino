@@ -99,6 +99,7 @@
 #include "plugin/transformations/keep_xattention_threshold_precision.hpp"
 #include "plugin/transformations/kv_cache_compression.hpp"
 #include "plugin/transformations/kv_cache_fusion.hpp"
+#include "plugin/transformations/kv_cache_expand_transform.hpp"
 #include "plugin/transformations/lora_horizontal_fusion.hpp"
 #include "plugin/transformations/lora_subgraph_horizontal_fusion.hpp"
 #include "plugin/transformations/move_fc_reshape_to_weights.hpp"
@@ -209,6 +210,8 @@
 #include "openvino/op/shuffle_channels.hpp"
 #include "openvino/op/transpose.hpp"
 #include "openvino/util/log.hpp"
+
+#include <openvino/pass/sdpa_to_paged_attention.hpp>
 
 #include "intel_gpu/primitives/scaled_dot_product_attention.hpp"
 namespace {
@@ -820,13 +823,16 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         }
 
         pass_config->set_callback<ov::pass::ScaledDotProductAttentionDecomposition>([&](const std::shared_ptr<const ov::Node> node){
-            if (!config.get_enable_sdpa_optimization())
+            if (!config.get_enable_sdpa_optimization()) {
+                OPENVINO_DEBUG("SDPA decompose: disable sdpa optimization in config.");
                 return false;
+            }
 
             auto sdpa = ov::as_type_ptr<const ov::op::v13::ScaledDotProductAttention>(node);
             // TODO: sdpa_opt is not supporting sink_input for 1st token case yet
             constexpr size_t sink_idx = cldnn::scaled_dot_product_attention::ScaledDotProductAttentionInputIdx::SINK;
             if (sdpa->get_input_size() > sink_idx && !device_info.supports_immad) {
+                OPENVINO_DEBUG("SDPA decompose: input size mismatch.");
                 return false;
             }
 
@@ -836,22 +842,28 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
 
             // Known limitations:
             // - The data type of SDPA should be fp16
-            if (sdpa->get_output_element_type(0) != ov::element::f16)
+            if (sdpa->get_output_element_type(0) != ov::element::f16) {
+                OPENVINO_DEBUG("SDPA decompose: output element type is not fp16.");
                 return false;
+            }
 
             // - The attn mask type of SDPA should be fp16
             if (!sdpa->get_causal() && sdpa->get_input_size() >= 4 && sdpa->get_input_element_type(3) == ov::element::boolean) {
+                OPENVINO_DEBUG("SDPA decompose: attn mask mismatch.");
                 return false;
             }
 
             // - The number of dimensions for each input is expected to be 4 or 3
             if (!(query_ps.size() == 3 || query_ps.size() == 4) ||
                 !(key_ps.size() == 3 || key_ps.size() == 4) ||
-                !(value_ps.size() == 3 || value_ps.size() == 4))
+                !(value_ps.size() == 3 || value_ps.size() == 4)) {
+                OPENVINO_DEBUG("SDPA decompose: input rank is not 3 or 4.");
                 return false;
+            }
 
             // - The head size of all Q, K, and V inputs should be the same static value
-            if (query_ps[query_ps.size() - 1].is_dynamic() || key_ps[key_ps.size() - 1].is_dynamic() || value_ps[value_ps.size() - 1].is_dynamic()) {
+            if (query_ps[query_ps.size() - 1].is_dynamic() || key_ps[key_ps.size() - 1].is_dynamic() || value_ps[value_ps.size() - 1].is_dynamic()) {        
+                OPENVINO_DEBUG("SDPA decompose: input head size is dynamic.");
                 return false;
             }
 
@@ -875,6 +887,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
             //   until the SDPA operation is optimized for these cases
             bool valid_head_size = (head_size >= 64 && head_size <= std::min(device_info.max_work_group_size, static_cast<uint64_t>(512)));
             if (!valid_head_size || head_size % 2 != 0) { // head_size should be an even number (until the SDPA opt kernel is fixed for odd head size)
+                OPENVINO_DEBUG("SDPA decompose: invalid head size.");
                 return false;
             }
 
@@ -882,6 +895,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
             // sdpa_opt is not supporting compressed KV yet for unaligned head size
             if (head_size % optimal_subgroup_size != 0) {
                 if (ov::element::Type(sdpa->get_input_element_type(1)).size() < 2 || ov::element::Type(sdpa->get_input_element_type(2)).size() < 2) {
+                    OPENVINO_DEBUG("SDPA decompose: unaligned head size with compressed KV.");
                     return false;
                 }
             }
@@ -1556,6 +1570,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
             return rank != 4;
         });
         manager.register_pass<ov::intel_gpu::KVCacheFusion>();
+        manager.register_pass<ov::intel_gpu::KVCacheExpandTransformation>();
         manager.register_pass<ov::intel_gpu::FullyConnectedConvertFusion>();
         manager.register_pass<ov::intel_gpu::TransposeFusion>(device_info.supports_immad);
 
@@ -1563,6 +1578,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
             manager.register_pass<ov::intel_gpu::UnsqueezeBroadcastReshapeMatmulFusion>();
         }
         manager.register_pass<ov::intel_gpu::UnsqueezeBroadcastReshapeSDPAFusion>();
+        // manager.register_pass<ov::pass::SDPAToPagedAttention>();
 
         manager.register_pass<ov::pass::GLUFusion>();
         manager.register_pass<ov::intel_gpu::IndirectKVCache>();

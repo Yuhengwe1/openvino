@@ -4,6 +4,8 @@
 
 #include "transformations/common_optimizations/sdpa_fusion.hpp"
 
+#include "openvino/util/log.hpp"
+
 #include "itt.hpp"
 #include "openvino/core/graph_util.hpp"
 #include "openvino/core/rt_info.hpp"
@@ -405,14 +407,25 @@ SDPAFusionMatcher::SDPAFusionMatcher() {
         auto in0_pshape = add->input(0).get_partial_shape();
         auto out_pshape = add->output(0).get_partial_shape();
 
-        auto corner_case = in0_pshape.rank().get_length() > 1 && out_pshape.rank().get_length() > 1 &&
-                           in0_pshape[-1].is_dynamic() && in0_pshape[-2].is_dynamic() && out_pshape[-1].is_dynamic() &&
-                           out_pshape[-2].is_dynamic();
-
-        if (corner_case) {
-            ov::symbol::set_equal(in0_pshape[-1].get_symbol(), out_pshape[-1].get_symbol());
-            ov::symbol::set_equal(in0_pshape[-2].get_symbol(), out_pshape[-2].get_symbol());
+        if (in0_pshape.rank().get_length() > 1 && out_pshape.rank().get_length() > 1) {
+            // Independently examine the last dimension
+            if (in0_pshape[-1].is_dynamic() && out_pshape[-1].is_dynamic()) {
+                ov::symbol::set_equal(in0_pshape[-1].get_symbol(), out_pshape[-1].get_symbol());
+            }
+            // Independently examine the second last dimension
+            if (in0_pshape[-2].is_dynamic() && out_pshape[-2].is_dynamic()) {
+                ov::symbol::set_equal(in0_pshape[-2].get_symbol(), out_pshape[-2].get_symbol());
+            }
         }
+
+        // auto corner_case = in0_pshape.rank().get_length() > 1 && out_pshape.rank().get_length() > 1 &&
+        //                    in0_pshape[-1].is_dynamic() && in0_pshape[-2].is_dynamic() && out_pshape[-1].is_dynamic() &&
+        //                    out_pshape[-2].is_dynamic();
+
+        // if (corner_case) {
+        //     ov::symbol::set_equal(in0_pshape[-1].get_symbol(), out_pshape[-1].get_symbol());
+        //     ov::symbol::set_equal(in0_pshape[-2].get_symbol(), out_pshape[-2].get_symbol());
+        // }
         return true;
     };
 
@@ -485,12 +498,15 @@ SDPAFusionMatcher::SDPAFusionMatcher() {
     ov::matcher_pass_callback callback = [OV_CAPTURE_CPY_AND_THIS](Matcher& m) {
         const auto& pm = m.get_pattern_value_map();
         if (transformation_callback(m.get_match_root())) {
+            OPENVINO_DEBUG("SDPA Fusion failed in step1: no match root");
             return false;
         }
 
         // 2 scales detected
-        if (pm.count(qk_scaled) && (pm.count(opt_k_scale) || pm.count(opt_kT_scale)))
+        if (pm.count(qk_scaled) && (pm.count(opt_k_scale) || pm.count(opt_kT_scale))) {
+            OPENVINO_DEBUG("SDPA Fusion failed in step2: scales detected");
             return false;
+        }
 
         bool mask_present = pm.count(mask);
         bool matmul_transposes_k = pm.count(qk_transpose_b);
@@ -499,21 +515,29 @@ SDPAFusionMatcher::SDPAFusionMatcher() {
         auto k_node = pm.count(k) ? pm.at(k) : pm.at(kT);
         const auto& v_node = pm.at(v);
 
-        if (mask_present && pm.at(mask).get_partial_shape().size() > 4)
+        if (mask_present && pm.at(mask).get_partial_shape().size() > 4) {
+            OPENVINO_DEBUG("SDPA Fusion failed in step3: Mask with rank greater than 4 is not supported");
             return false;
+        }
 
         auto T = q_node.get_element_type();
         std::shared_ptr<ov::Node> scale_node;
-        if (!(scale_node = get_scale(attn_scale, T, m)))
+        if (!(scale_node = get_scale(attn_scale, T, m))) {
+            OPENVINO_DEBUG("SDPA Fusion failed in step4: failed to get scale node");
             return false;
+        }
 
         std::shared_ptr<ov::Node> mask_input;
-        if (!(mask_input = get_mask(mask, qk_opt_scaled_opt_mask_added, T, mask_present, m)))
+        if (!(mask_input = get_mask(mask, qk_opt_scaled_opt_mask_added, T, mask_present, m))) {
+            OPENVINO_DEBUG("SDPA Fusion failed in step5: failed to get mask input");
             return false;
+        }
 
         ov::OutputVector qkv = get_qkv({q_node, k_node, v_node}, mask_input, T, matmul_transposes_k, m);
-        if (qkv.size() == 0)
+        if (qkv.size() == 0) {
+            OPENVINO_DEBUG("SDPA Fusion failed in step6: failed to get qkv");
             return false;
+        }
 
         std::shared_ptr<ov::Node> sdpa =
             std::make_shared<v13::ScaledDotProductAttention>(qkv[0], qkv[1], qkv[2], mask_input, scale_node, false);
