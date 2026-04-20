@@ -39,6 +39,8 @@
 #include "program_dump_graph.h"
 
 #include <algorithm>
+#include <chrono>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include <stack>
@@ -51,9 +53,7 @@
 
 #include "debug_helper.hpp"
 #ifdef GPU_DEBUG_CONFIG
-#include <fstream>
 #include <sys/stat.h>
-#include <chrono>
 #include <thread>
 #include <filesystem>
 #endif
@@ -903,7 +903,26 @@ bool network::has_event(const primitive_id& id) const {
 }
 
 void network::execute_impl(const std::vector<event::ptr>& events) {
-    set_arguments();
+    // Set OV_GPU_HOST_TIME_PROFILE=1 to enable per-primitive host-side dispatch timing.
+    // Prints a summary table (us) to stdout at the end of each execute_impl call.
+    const char* host_time_env = std::getenv("OV_GPU_HOST_TIME_PROFILE");
+    const bool enable_host_timing = host_time_env && std::string(host_time_env) != "0";
+    static int iter = 0;
+
+    struct PrimStat { size_t count = 0; double add_deps = 0, prepare = 0, execute = 0, flush = 0; };
+    std::map<std::string, PrimStat> type_stats;
+    double set_args_us = 0.0, final_flush_us = 0.0;
+
+    auto us = [](auto t0, auto t1) -> double {
+        return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count());
+    };
+
+    {
+        auto t0 = std::chrono::high_resolution_clock::now();
+        set_arguments();
+        if (enable_host_timing)
+            set_args_us = us(t0, std::chrono::high_resolution_clock::now());
+    }
 
     // This extra flush command is needed for dynamic models in both cases of out_of_order / in_order operating mode
     // since it reduces `bubbles` number in pipeline and GPU's idle time by timely flushing new kernels to device.
@@ -918,26 +937,115 @@ void network::execute_impl(const std::vector<event::ptr>& events) {
 
         inst->reset_events();
 
-        if (inst->is_input()) {
-            inst->add_dep_events(events);
+        if (enable_host_timing) {
+            auto t0 = std::chrono::high_resolution_clock::now();
+            if (inst->is_input())
+                inst->add_dep_events(events);
+            auto t1 = std::chrono::high_resolution_clock::now();
+            inst->prepare_primitive();
+            auto t2 = std::chrono::high_resolution_clock::now();
+            inst->execute();
+            auto t3 = std::chrono::high_resolution_clock::now();
+            ++executed_prims;
+            if (needs_flushing && executed_prims % flush_frequency == 0)
+                get_stream().flush();
+            auto t4 = std::chrono::high_resolution_clock::now();
+
+            auto& s = type_stats[inst->desc()->type_string()];
+            s.count++;
+            s.add_deps += us(t0, t1);
+            s.prepare  += us(t1, t2);
+            s.execute  += us(t2, t3);
+            s.flush    += us(t3, t4);
+        } else {
+            if (inst->is_input())
+                inst->add_dep_events(events);
+            inst->prepare_primitive();
+            inst->execute();
+            ++executed_prims;
+            if (needs_flushing && executed_prims % flush_frequency == 0)
+                get_stream().flush();
         }
-
-        inst->prepare_primitive();
-        inst->execute();
-
-        executed_prims++;
-        if (needs_flushing && executed_prims % flush_frequency == 0)
-            get_stream().flush();
     }
 
     // Using output of previous network as input to another one may cause hazard (in OOOQ mode) if user would not
     // provide proper event to execution. Flushing pipeline should prevent this kind of issues.
     // In scenarios with a big number of very small networks it can provide performance drop.
-    get_stream().flush();
+    {
+        auto t0 = std::chrono::high_resolution_clock::now();
+        get_stream().flush();
+        if (enable_host_timing)
+            final_flush_us = us(t0, std::chrono::high_resolution_clock::now());
+    }
 
     // Reset all flags for the next execution
     for (auto& inst : _exec_order) {
         inst->reset_flags();
+    }
+
+    if (enable_host_timing) {
+        double total_add_deps = 0, total_prepare = 0, total_execute = 0, total_flush = 0;
+        for (auto& [_, s] : type_stats) {
+            total_add_deps += s.add_deps;
+            total_prepare  += s.prepare;
+            total_execute  += s.execute;
+            total_flush    += s.flush;
+        }
+
+        const int W0 = 36, W = 14;
+        auto avg = [](double total, size_t count) -> double { return count > 0 ? total / count : 0.0; };
+
+        std::cout << "[OV_GPU_HOST_TIME_PROFILE] net_id=" << net_id
+                  << "  set_arguments=" << std::fixed << std::setprecision(1) << set_args_us
+                  << "us  final_flush=" << final_flush_us << "us\n";
+        std::cout << std::left
+                  << std::setw(W0) << "Type"
+                  << std::setw(W)  << "Count"
+                  << std::setw(W)  << "Execute(us)"
+                  << std::setw(W)  << "Avg Exec"
+                  << std::setw(W)  << "Prepare(us)"
+                  << std::setw(W)  << "Avg Prep"
+                  << std::setw(W)  << "AddDeps(us)"
+                  << std::setw(W)  << "Flush(us)"
+                  << "\n";
+        std::cout << std::string(W0 + W * 7, '-') << "\n";
+        for (auto& [type, s] : type_stats) {
+            std::cout << std::left << std::setw(W0) << type
+                      << std::setw(W)  << s.count
+                      << std::fixed << std::setprecision(1)
+                      << std::setw(W)  << s.execute
+                      << std::setw(W)  << avg(s.execute, s.count)
+                      << std::setw(W)  << s.prepare
+                      << std::setw(W)  << avg(s.prepare, s.count)
+                      << std::setw(W)  << s.add_deps
+                      << std::setw(W)  << s.flush
+                      << "\n";
+        }
+        std::cout << std::string(W0 + W * 7, '-') << "\n";
+        std::cout << std::left << std::setw(W0) << "TOTAL"
+                  << std::setw(W)  << executed_prims
+                  << std::fixed << std::setprecision(1)
+                  << std::setw(W)  << total_execute
+                  << std::setw(W)  << avg(total_execute, executed_prims)
+                  << std::setw(W)  << total_prepare
+                  << std::setw(W)  << avg(total_prepare, executed_prims)
+                  << std::setw(W)  << total_add_deps
+                  << std::setw(W)  << total_flush
+                  << "\n\n";
+    }
+    iter++;
+
+    // Dump per-primitive profiling data to CSV on every iteration.
+    // The destructor-based dump may not fire if the network outlives the DLL
+    // (e.g. ORT EP on Windows), so we dump here as well.  Accumulated data
+    // grows each iteration; the file is overwritten so the last write wins.
+    GPU_DEBUG_IF(iter % 50 == 0) {
+        std::string dump_path = get_config().get_dump_profiling_data_path();
+        if (!dump_path.empty()) {
+            bool per_iter = GPU_DEBUG_VALUE_OR(get_config().get_dump_profiling_data_per_iter(), false);
+            dump_perf_data_raw(dump_path + "/perf_raw" + std::to_string(net_id) + ".csv",
+                               per_iter, _exec_order);
+        }
     }
 }
 

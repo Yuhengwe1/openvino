@@ -11,6 +11,7 @@
 #include "openvino/op/broadcast.hpp"
 #include "openvino/op/constant.hpp"
 #include "openvino/op/reshape.hpp"
+#include "openvino/op/shape_of.hpp"
 #include "openvino/op/transpose.hpp"
 #include "openvino/op/unsqueeze.hpp"
 #include "openvino/op/concat.hpp"
@@ -27,7 +28,18 @@ using ov::pass::pattern::op::Or;
 UnsqueezeBroadcastReshapeSDPAFusion::UnsqueezeBroadcastReshapeSDPAFusion() {
     using namespace ov::pass::pattern;
 
-    auto unsqueeze_predicate = rank_equals(5) && consumers_count(1);
+    // Allow extra ShapeOf consumers on the unsqueeze output (introduced after rebase to compute
+    // dynamic broadcast target shapes). Only require exactly one non-ShapeOf consumer.
+    auto has_single_non_shapeof_consumer = [](const ov::Output<ov::Node>& output) -> bool {
+        const auto& target_inputs = output.get_target_inputs();
+        size_t non_shapeof_consumers = std::count_if(target_inputs.begin(), target_inputs.end(),
+            [](const ov::Input<ov::Node>& ti) {
+                return !ov::is_type<ov::op::v3::ShapeOf>(ti.get_node());
+            });
+        return non_shapeof_consumers == 1;
+    };
+
+    auto unsqueeze_predicate = rank_equals(5) && has_single_non_shapeof_consumer;
 
     auto broadcast_predicate = unsqueeze_predicate && [](const ov::Output<ov::Node>& output) -> bool {
         const auto broadcast = ov::as_type_ptr<ov::op::v3::Broadcast>(output.get_node_shared_ptr());

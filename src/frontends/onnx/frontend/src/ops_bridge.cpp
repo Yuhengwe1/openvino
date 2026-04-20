@@ -156,6 +156,7 @@ OperatorSet OperatorsBridge::get_operator_set(const std::string& domain, int64_t
     const auto dm = m_map.find(domain);
     if (dm == std::end(m_map)) {
         OPENVINO_DEBUG("Domain not recognized by OpenVINO");
+        // printf("domain: %s\n", domain.c_str());
         return result;
     }
     if (domain == "" && version > LATEST_SUPPORTED_ONNX_OPSET_VERSION) {

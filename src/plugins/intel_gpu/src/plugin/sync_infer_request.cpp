@@ -538,6 +538,25 @@ void SyncInferRequest::wait() {
         exec_time_info.wait = sync_total_time;
         exec_time_info.outputs_processing = outputs_processing_time;
     }
+
+    // print operation times
+    // std::map<std::string, std::pair<int, long long>> type_stats;
+    // for (const auto& info : m_graph->get_profiling_info()) {
+    // if (info.status == ov::ProfilingInfo::Status::EXECUTED) {
+    //   type_stats[info.node_type].first++;
+    //   type_stats[info.node_type].second += info.real_time.count();
+    // }
+    // }
+     
+    // std::cout << "-------------------------Print start----------------------------" << std::endl;
+    // for (const auto& stat : type_stats) {
+    //   double avg_time = stat.second.first > 0 ? (double)stat.second.second / stat.second.first : 0.0;
+    //   std::cout << "Type: " << stat.first
+    // << "\tCount: " << stat.second.first
+    // << "\tTotal Time: " << stat.second.second << " us"
+    // << "\tAvg Time: " << std::fixed << std::setprecision(2) << avg_time << " us"  << std::endl;
+    //    }
+    // std::cout << "-------------------------Print end------------------------------" << std::endl;
 }
 
 // ----------------------------------------------------------------------------------------- //
