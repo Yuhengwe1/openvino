@@ -445,6 +445,11 @@ protected:
     bool _is_constant = false;
     bool _needs_completion_event = false;
 
+    // Shape-signature cache for short-circuit optimisation.
+    // Stores a hash of (input_layouts + output_layouts) under dyn-pad-aware equality.
+    // SIZE_MAX means "uninitialized / always-miss".
+    size_t _last_shape_sig = SIZE_MAX;
+
     std::vector<size_t> _max_output_layout_count;
     std::vector<size_t> _max_intermediates_memory_sizes;
 
@@ -465,6 +470,9 @@ protected:
     virtual void update_weights();
 
     void fill_shape_info_data(const layout& runtime_layout, const layout& node_layout, int32_t* shape_info_ptr, size_t& offset);
+    size_t compute_shape_signature() const;
+    bool shape_signature_unchanged() const;
+    void cache_shape_signature();
     bool use_async_compilation();
     // if primitive_inst doesn't replace impl to new impl(static impl with opt kerenl or dynamic impl), return false
     void update_impl(bool use_async_compilation);
