@@ -196,6 +196,7 @@ void kv_cache_inst::update_shape_info_tensor(const kernel_impl_params& params) {
         const auto& runtime_out_lay = params.output_layouts[i];
         fill_shape_info_data(runtime_out_lay, node_out_lay, shape_info_ptr, offset);
     }
+    cache_shape_signature();
 }
 
 void kv_cache_inst::release_variable() {

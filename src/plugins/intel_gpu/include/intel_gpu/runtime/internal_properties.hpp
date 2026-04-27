@@ -169,6 +169,7 @@ static constexpr Property<bool, ov::PropertyMutability::RW> disable_gated_mlp_fu
 static constexpr Property<bool, ov::PropertyMutability::RW> disable_fake_alignment{"GPU_DISABLE_FAKE_ALIGNMENT"};
 static constexpr Property<bool, ov::PropertyMutability::RW> disable_moe_opt{"GPU_DISABLE_MOE_OPT"};
 static constexpr Property<bool, ov::PropertyMutability::RW> disable_runtime_skip_reorder{"GPU_DISABLE_RUNTIME_SKIP_REORDER"};
+static constexpr Property<bool, ov::PropertyMutability::RW> disable_shape_shortcircuit{"GPU_DISABLE_SHAPE_SHORTCIRCUIT"};
 static constexpr Property<bool, ov::PropertyMutability::RW> asym_dynamic_quantization{"GPU_ASYM_DYNAMIC_QUANTIZATION"};
 static constexpr Property<size_t, ov::PropertyMutability::RW> dynamic_quantization_threshold{"GPU_DYNAMIC_QUANTIZATION_THRESHOLD"};
 static constexpr Property<size_t, ov::PropertyMutability::RW> dynamic_quantization_precomputed_reduction{"GPU_DYNAMIC_QUANTIZATION_PRECOMPUTED_REDUCTION"};
