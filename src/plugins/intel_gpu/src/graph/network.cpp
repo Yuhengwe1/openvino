@@ -1040,7 +1040,7 @@ void network::execute_impl(const std::vector<event::ptr>& events) {
     // (e.g. ORT EP on Windows), so we dump here as well.  Accumulated data
     // grows each iteration; the file is overwritten so the last write wins.
     GPU_DEBUG_IF(iter % 50 == 0) {
-        std::string dump_path = get_config().get_dump_profiling_data_path();
+        std::string dump_path = GPU_DEBUG_VALUE_OR(get_config().get_dump_profiling_data_path(), "");
         if (!dump_path.empty()) {
             bool per_iter = GPU_DEBUG_VALUE_OR(get_config().get_dump_profiling_data_per_iter(), false);
             dump_perf_data_raw(dump_path + "/perf_raw" + std::to_string(net_id) + ".csv",
