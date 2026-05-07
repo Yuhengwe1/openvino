@@ -1448,7 +1448,7 @@ void primitive_inst::update_impl(bool use_async_compilation) {
     // data and shape_info tensor with the actual (changed) dimensions.
     // Signature is cached in update_shape_info_tensor (after kernel execution),
     // so this comparison is against the PREVIOUS iteration's signature.
-    if (!get_config().get_disable_shape_shortcircuit() && _impl && shape_signature_unchanged()) {
+    if (!GPU_DEBUG_VALUE_OR(get_config().get_disable_shape_shortcircuit(), false) && _impl && shape_signature_unchanged()) {
         GPU_DEBUG_TRACE_DETAIL << id() << " Skip impl lookup: shape signature unchanged, updating dispatch data only" << std::endl;
         _impl->update(*this, *_impl_params);
         set_flag(ExecutionFlags::IMPL_CHANGED);
