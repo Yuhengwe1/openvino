@@ -103,6 +103,7 @@
 #include "plugin/transformations/kv_cache_compression.hpp"
 #include "plugin/transformations/kv_cache_fusion.hpp"
 #include "plugin/transformations/kv_cache_expand_transform.hpp"
+#include "plugin/transformations/rope_fusion.hpp"
 #include "plugin/transformations/lora_horizontal_fusion.hpp"
 #include "plugin/transformations/lora_subgraph_horizontal_fusion.hpp"
 #include "plugin/transformations/move_fc_reshape_to_weights.hpp"
@@ -1493,6 +1494,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         pass_config->disable<ov::pass::RoPEFusionGPTJ>();
         pass_config->disable<ov::pass::RoPEFusionIOSlicing>();
         pass_config->disable<ov::pass::RoPEShareCosSin>();
+        manager.register_pass<ov::intel_gpu::WebNNRoPEFusion>();
 
         manager.register_pass<ov::intel_gpu::IncreasePositionIdsPrecision>();
         manager.register_pass<ov::intel_gpu::FuseAtan2Decomposed>();
