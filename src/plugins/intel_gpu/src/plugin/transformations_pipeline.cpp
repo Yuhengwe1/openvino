@@ -104,6 +104,7 @@
 #include "plugin/transformations/kv_cache_fusion.hpp"
 #include "plugin/transformations/kv_cache_expand_transform.hpp"
 #include "plugin/transformations/rope_fusion.hpp"
+#include "plugin/transformations/rope_transpose_elimination.hpp"
 #include "plugin/transformations/lora_horizontal_fusion.hpp"
 #include "plugin/transformations/lora_subgraph_horizontal_fusion.hpp"
 #include "plugin/transformations/move_fc_reshape_to_weights.hpp"
@@ -1617,6 +1618,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         });
         manager.register_pass<ov::intel_gpu::KVCacheFusion>();
         manager.register_pass<ov::intel_gpu::KVCacheExpandTransformation>();
+        manager.register_pass<ov::intel_gpu::WebNNRoPETransposeElimination>();
         manager.register_pass<ov::intel_gpu::FullyConnectedConvertFusion>();
         manager.register_pass<ov::intel_gpu::TransposeFusion>(device_info.supports_immad);
 
