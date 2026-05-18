@@ -105,6 +105,7 @@
 #include "plugin/transformations/kv_cache_expand_transform.hpp"
 #include "plugin/transformations/rope_fusion.hpp"
 #include "plugin/transformations/rope_transpose_elimination.hpp"
+#include "plugin/transformations/gqa_causal_mask_elimination.hpp"
 #include "plugin/transformations/lora_horizontal_fusion.hpp"
 #include "plugin/transformations/lora_subgraph_horizontal_fusion.hpp"
 #include "plugin/transformations/move_fc_reshape_to_weights.hpp"
@@ -1630,6 +1631,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
 
         manager.register_pass<ov::pass::GLUFusion>();
         manager.register_pass<ov::intel_gpu::IndirectKVCache>();
+        manager.register_pass<ov::intel_gpu::WebNNGQACausalMaskElimination>();
 
         if (!has_shared_kv_cache_vars(func)) {
             auto kv_cache_compression_dt = config.get_kv_cache_precision();
