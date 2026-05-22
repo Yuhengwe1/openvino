@@ -248,6 +248,8 @@ private:
     bool _enable_profiling = false;
     bool _reset_arguments;
     bool _reuse_variable_mem = false;
+    bool _perf_raw_dumped = false;
+    bool _avg_counters_dumped = false;
 
     /* Common memory pointer for shape_info */
     memory::ptr _shape_info_ptr;

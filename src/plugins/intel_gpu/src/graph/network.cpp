@@ -284,11 +284,11 @@ network::~network() {
     _memory_pool->clear_pool_for_network(net_id);
     std::string dump_path = GPU_DEBUG_VALUE_OR(get_config().get_dump_profiling_data_path(), "");
 
-    GPU_DEBUG_IF(!dump_path.empty()) {
+    GPU_DEBUG_IF(!dump_path.empty() && !_perf_raw_dumped) {
         dump_perf_data_raw(dump_path + "/perf_raw" + std::to_string(net_id) + ".csv", false, _exec_order);
     }
     std::string avg_counters_path = GPU_DEBUG_VALUE_OR(get_config().get_average_counters(), "");
-    GPU_DEBUG_IF(!avg_counters_path.empty()) {
+    GPU_DEBUG_IF(!avg_counters_path.empty() && !_avg_counters_dumped) {
         dump_average_counters(avg_counters_path, net_id, _exec_order);
     }
 }
@@ -1069,6 +1069,14 @@ void network::execute_impl(const std::vector<event::ptr>& events) {
             bool per_iter = GPU_DEBUG_VALUE_OR(get_config().get_dump_profiling_data_per_iter(), false);
             dump_perf_data_raw(dump_path + "/perf_raw" + std::to_string(net_id) + ".csv",
                                per_iter, _exec_order);
+            _perf_raw_dumped = true;
+        }
+    }
+    GPU_DEBUG_IF(iter % 60 == 0) {
+        std::string avg_counters_path = GPU_DEBUG_VALUE_OR(get_config().get_average_counters(), "");
+        if (!avg_counters_path.empty()) {
+            dump_average_counters(avg_counters_path, net_id, _exec_order);
+            _avg_counters_dumped = true;
         }
     }
 }
