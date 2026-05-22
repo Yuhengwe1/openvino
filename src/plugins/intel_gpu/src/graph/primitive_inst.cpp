@@ -1371,6 +1371,64 @@ void primitive_inst::update_shape_info_tensor(const kernel_impl_params& params) 
         const auto& runtime_out_lay = params.output_layouts[i];
         fill_shape_info_data(runtime_out_lay, node_out_lay, shape_info_ptr, offset);
     }
+    cache_shape_signature();
+}
+
+// ---------------------------------------------------------------------------
+// Shape-signature cache helpers
+// ---------------------------------------------------------------------------
+static size_t layout_hash_dynpad_stable(const layout& lay,
+                                        const padding::DynamicDimsMask& dyn_mask) {
+    // Hash layout but treat dyn-pad axes as "don't-care" so that the
+    // +1-per-token sequence-axis growth doesn't invalidate the signature.
+    // `dyn_mask` is the union of _dynamic_dims_mask across all layouts of the
+    // primitive, so a dyn-pad axis in any layout also masks the same axis in
+    // sibling layouts (e.g. kv_cache's i32 indices output has no dyn_pad_dims
+    // but its seq axis still changes every token).
+    size_t seed = cldnn::hash_combine(0, static_cast<int>(lay.data_type));
+    seed = cldnn::hash_combine(seed, lay.format.value);
+    const auto& pad = lay.data_padding;
+    const auto& pshape = lay.get_partial_shape();
+    for (size_t i = 0; i < pshape.size(); ++i) {
+        const auto& d = pshape[i];
+        const bool unstable = d.is_dynamic() || ((i < cldnn::SHAPE_RANK_MAX) && (dyn_mask[i] == 1));
+        seed = cldnn::hash_combine(seed, unstable ? static_cast<int64_t>(-1) : d.get_length());
+    }
+    for (size_t i = 0; i < cldnn::SHAPE_RANK_MAX; ++i) {
+        seed = cldnn::hash_combine(seed, pad._lower_size[i]);
+        const int64_t upper = (dyn_mask[i] == 1) ? 0 : pad._upper_size[i];
+        seed = cldnn::hash_combine(seed, upper);
+    }
+    seed = cldnn::hash_combine(seed, pad._dynamic_dims_mask.to_ulong());
+    return seed;
+}
+
+size_t primitive_inst::compute_shape_signature() const {
+    // Collect the union of dynamic-pad masks across every layout so that a
+    // dyn-pad axis in ANY layout (e.g. the main kv_cache output) also masks
+    // the same axis in layouts that lack the flag (e.g. the i32 indices output).
+    padding::DynamicDimsMask global_dyn_mask = padding::EMPTY_MASK;
+    for (const auto& lay : _impl_params->input_layouts)
+        global_dyn_mask |= lay.data_padding._dynamic_dims_mask;
+    for (const auto& lay : _impl_params->output_layouts)
+        global_dyn_mask |= lay.data_padding._dynamic_dims_mask;
+
+    size_t seed = 0;
+    for (const auto& lay : _impl_params->input_layouts)
+        seed = cldnn::hash_combine(seed, layout_hash_dynpad_stable(lay, global_dyn_mask));
+    for (const auto& lay : _impl_params->output_layouts)
+        seed = cldnn::hash_combine(seed, layout_hash_dynpad_stable(lay, global_dyn_mask));
+    return seed;
+}
+
+bool primitive_inst::shape_signature_unchanged() const {
+    if (_last_shape_sig == SIZE_MAX)
+        return false;
+    return compute_shape_signature() == _last_shape_sig;
+}
+
+void primitive_inst::cache_shape_signature() {
+    _last_shape_sig = compute_shape_signature();
 }
 
 void primitive_inst::update_impl(bool use_async_compilation) {
@@ -1382,6 +1440,18 @@ void primitive_inst::update_impl(bool use_async_compilation) {
     if (_impl != nullptr && can_be_optimized()) {
         GPU_DEBUG_TRACE_DETAIL << id() << " Skip impl update: primitive is optimized out" << std::endl;
         set_flag(ExecutionFlags::IMPL_CHANGED, get_flag(ExecutionFlags::SHAPE_CHANGED));
+        return;
+    }
+
+    // Short-circuit: if shapes are structurally identical (dyn-pad advance only),
+    // reuse the current impl but still call _impl->update() to refresh dispatch
+    // data and shape_info tensor with the actual (changed) dimensions.
+    // Signature is cached in update_shape_info_tensor (after kernel execution),
+    // so this comparison is against the PREVIOUS iteration's signature.
+    if (!GPU_DEBUG_VALUE_OR(get_config().get_disable_shape_shortcircuit(), false) && _impl && shape_signature_unchanged()) {
+        GPU_DEBUG_TRACE_DETAIL << id() << " Skip impl lookup: shape signature unchanged, updating dispatch data only" << std::endl;
+        _impl->update(*this, *_impl_params);
+        set_flag(ExecutionFlags::IMPL_CHANGED);
         return;
     }
 
