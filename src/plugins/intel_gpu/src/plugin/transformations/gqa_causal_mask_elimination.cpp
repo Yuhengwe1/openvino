@@ -21,7 +21,8 @@ namespace ov::intel_gpu {
 namespace {
 
 // Trace back through the mask input to verify it comes from the GQA causal mask pattern:
-//   Squeeze ← Select ← Clamp ← Less ← CumSum(exclusive=true)
+//   Squeeze ← Select ← [Clamp] ← Less ← CumSum(exclusive=true)
+// Clamp is optional: newer ORT GQA decompositions emit Select(Less(...), 0, -inf) directly.
 bool is_gqa_causal_mask_pattern(const ov::Output<ov::Node>& mask_output) {
     auto node = mask_output.get_node_shared_ptr();
 
@@ -33,19 +34,27 @@ bool is_gqa_causal_mask_pattern(const ov::Output<ov::Node>& mask_output) {
     if (!select)
         return false;
 
-    auto clamp = ov::as_type_ptr<ov::op::v0::Clamp>(select->input_value(0).get_node_shared_ptr());
-    if (!clamp)
-        return false;
+    auto condition_node = select->input_value(0).get_node_shared_ptr();
 
-    auto less = ov::as_type_ptr<ov::op::v1::Less>(clamp->input_value(0).get_node_shared_ptr());
+    std::shared_ptr<ov::op::v1::Less> less;
+    auto clamp = ov::as_type_ptr<ov::op::v0::Clamp>(condition_node);
+    if (clamp) {
+        less = ov::as_type_ptr<ov::op::v1::Less>(clamp->input_value(0).get_node_shared_ptr());
+    } else {
+        less = ov::as_type_ptr<ov::op::v1::Less>(condition_node);
+    }
+
     if (!less)
         return false;
 
-    auto cumsum = ov::as_type_ptr<ov::op::v0::CumSum>(less->input_value(0).get_node_shared_ptr());
-    if (!cumsum)
-        return false;
+    // CumSum may be on either input of Less (column or row range)
+    for (size_t i = 0; i < 2; ++i) {
+        auto cumsum = ov::as_type_ptr<ov::op::v0::CumSum>(less->input_value(i).get_node_shared_ptr());
+        if (cumsum && cumsum->is_exclusive())
+            return true;
+    }
 
-    return cumsum->is_exclusive();
+    return false;
 }
 
 }  // namespace
