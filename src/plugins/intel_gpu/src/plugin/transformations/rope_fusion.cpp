@@ -13,6 +13,8 @@
 #include "openvino/op/add.hpp"
 #include "openvino/op/concat.hpp"
 #include "openvino/op/constant.hpp"
+#include "openvino/op/convert.hpp"
+#include "openvino/op/gather.hpp"
 #include "openvino/op/multiply.hpp"
 #include "openvino/op/reshape.hpp"
 #include "openvino/op/split.hpp"
@@ -529,6 +531,170 @@ WebNNRoPEFusionMatcher::WebNNRoPEFusionMatcher() {
 
 WebNNRoPEFusion::WebNNRoPEFusion() {
     add_matcher<WebNNRoPEFusionMatcher>();
+}
+
+// ============================================================================
+// WebNNRoPEGatherFusionMatcher
+//
+// After WebNNRoPEFusion creates RoPE(data, gathered_cos, gathered_sin),
+// this pass detects that cos/sin inputs come from Gather(table, position_ids, axis)
+// and folds the gather into the RoPE node:
+//   RoPE(data, cos_table, sin_table, position_ids) with gather_position_arg_id=3
+//
+// This eliminates 2 separate Gather GPU kernel dispatches per RoPE invocation
+// (44 Gathers total for Q+K across 22 layers).
+// ============================================================================
+
+WebNNRoPEGatherFusionMatcher::WebNNRoPEGatherFusionMatcher() {
+    using namespace ov::pass::pattern;
+
+    auto rope_m = wrap_type<ov::op::internal::RoPE>();
+
+    ov::matcher_pass_callback callback = [=](ov::pass::pattern::Matcher& m) {
+        auto rope_node = ov::as_type_ptr<ov::op::internal::RoPE>(m.get_match_root());
+        if (!rope_node)
+            return false;
+
+        auto config = rope_node->get_config();
+
+        // Skip if gather is already fused
+        if (config.gather_position_arg_id > 0)
+            return false;
+
+        // RoPE should have exactly 3 inputs: [data, cos, sin]
+        if (rope_node->get_input_size() != 3)
+            return false;
+
+        auto cos_input = rope_node->input_value(1);
+        auto sin_input = rope_node->input_value(2);
+
+        // Trace through Unsqueeze if present (added by ensure_4d_cos_sin in RoPE fusion)
+        auto trace_through_unsqueeze = [](ov::Output<ov::Node> val)
+            -> std::pair<ov::Output<ov::Node>, std::shared_ptr<ov::Node>> {
+            auto node = val.get_node_shared_ptr();
+            if (auto unsqueeze = ov::as_type_ptr<ov::op::v0::Unsqueeze>(node)) {
+                return {unsqueeze->input_value(0), unsqueeze};
+            }
+            return {val, nullptr};
+        };
+
+        auto [cos_pre_unsqueeze, cos_unsqueeze] = trace_through_unsqueeze(cos_input);
+        auto [sin_pre_unsqueeze, sin_unsqueeze] = trace_through_unsqueeze(sin_input);
+
+        // Check if cos/sin come from Gather ops
+        auto cos_gather = ov::as_type_ptr<ov::op::v8::Gather>(cos_pre_unsqueeze.get_node_shared_ptr());
+        auto sin_gather = ov::as_type_ptr<ov::op::v8::Gather>(sin_pre_unsqueeze.get_node_shared_ptr());
+
+        if (!cos_gather || !sin_gather)
+            return false;
+
+        // Both gathers must use the same position_ids (input 1) and axis (input 2)
+        auto cos_position_ids = cos_gather->input_value(1);
+        auto sin_position_ids = sin_gather->input_value(1);
+
+        if (cos_position_ids != sin_position_ids)
+            return false;
+
+        // Verify gather axis is a constant and same for both
+        auto cos_axis_const = ov::as_type_ptr<ov::op::v0::Constant>(
+            cos_gather->input_value(2).get_node_shared_ptr());
+        auto sin_axis_const = ov::as_type_ptr<ov::op::v0::Constant>(
+            sin_gather->input_value(2).get_node_shared_ptr());
+
+        if (!cos_axis_const || !sin_axis_const)
+            return false;
+
+        auto cos_axis_val = cos_axis_const->cast_vector<int64_t>();
+        auto sin_axis_val = sin_axis_const->cast_vector<int64_t>();
+        if (cos_axis_val.size() != 1 || sin_axis_val.size() != 1)
+            return false;
+        if (cos_axis_val[0] != sin_axis_val[0])
+            return false;
+
+        // Get the cos/sin tables (input 0 of Gather)
+        auto cos_table = cos_gather->input_value(0);
+        auto sin_table = sin_gather->input_value(0);
+
+        // Verify cos/sin tables are the same rank (should be 4D: [1, 1, max_seq_len, half_D])
+        auto cos_table_shape = cos_table.get_partial_shape();
+        auto sin_table_shape = sin_table.get_partial_shape();
+        if (cos_table_shape.rank().is_dynamic() || sin_table_shape.rank().is_dynamic())
+            return false;
+
+        auto cos_table_rank = cos_table_shape.rank().get_length();
+        auto sin_table_rank = sin_table_shape.rank().get_length();
+        if (cos_table_rank != sin_table_rank)
+            return false;
+
+        // Tables must be 2D or 4D for the RoPE kernel to handle correctly
+        if (cos_table_rank != 2 && cos_table_rank != 4)
+            return false;
+
+        // Get position_ids and determine its rank for the kernel's GATHER_RANK
+        ov::Output<ov::Node> position_ids = cos_position_ids;
+        auto position_ids_shape = position_ids.get_partial_shape();
+        if (position_ids_shape.rank().is_dynamic())
+            return false;
+
+        auto position_ids_rank = position_ids_shape.rank().get_length();
+
+        // Convert position_ids to i32 if needed (kernel reads as int/uint)
+        auto pos_elem_type = position_ids.get_element_type();
+        if (pos_elem_type != ov::element::i32) {
+            auto convert = std::make_shared<ov::op::v0::Convert>(position_ids, ov::element::i32);
+            position_ids = convert->output(0);
+        }
+
+        // The RoPE kernel's ENABLE_GATHER path for non-4D expects position_ids to be at
+        // least 2D [batch, seq_len] so that INPUT3_FEATURE_NUM = seq_len and the kernel
+        // indexes gather[batch, position] correctly. If position_ids is 1D [seq_len],
+        // reshape it to [1, seq_len] to match the expected layout.
+        if (position_ids_rank == 1) {
+            auto target_shape = ov::op::v0::Constant::create(
+                ov::element::i64, ov::Shape{2}, std::vector<int64_t>{1, -1});
+            auto reshape = std::make_shared<ov::op::v1::Reshape>(position_ids, target_shape, false);
+            position_ids = reshape->output(0);
+        }
+
+        // Build the new RoPE node with 4 inputs: [data, cos_table, sin_table, position_ids]
+        ov::OutputVector new_args;
+        new_args.push_back(rope_node->input_value(0));  // data (unchanged)
+        new_args.push_back(cos_table);                   // cos table (full, ungathered)
+        new_args.push_back(sin_table);                   // sin table (full, ungathered)
+        new_args.push_back(position_ids);                // position_ids for gather
+
+        config.gather_position_arg_id = 3;
+
+        auto new_rope = std::make_shared<ov::op::internal::RoPE>(new_args, config);
+        new_rope->set_friendly_name(rope_node->get_friendly_name());
+
+        ov::NodeVector replaced_nodes;
+        replaced_nodes.push_back(rope_node);
+        if (cos_unsqueeze)
+            replaced_nodes.push_back(cos_unsqueeze);
+        if (sin_unsqueeze)
+            replaced_nodes.push_back(sin_unsqueeze);
+        replaced_nodes.push_back(cos_gather);
+        replaced_nodes.push_back(sin_gather);
+
+        ov::copy_runtime_info(replaced_nodes, new_rope);
+        ov::replace_node(rope_node, new_rope);
+
+        GPU_DEBUG_LOG << "[WebNNRoPEGatherFusion] Folded gather into RoPE: "
+                      << new_rope->get_friendly_name()
+                      << " position_ids_rank=" << position_ids_shape.rank().get_length()
+                      << " cos_table_rank=" << cos_table_rank
+                      << std::endl;
+
+        return true;
+    };
+
+    auto matcher = std::make_shared<ov::pass::pattern::Matcher>(rope_m, "WebNNRoPEGatherFusionMatcher");
+    this->register_matcher(matcher, callback);
+}
+
+WebNNRoPEGatherFusion::WebNNRoPEGatherFusion() {
+    add_matcher<WebNNRoPEGatherFusionMatcher>();
 }
 
 }  // namespace ov::intel_gpu

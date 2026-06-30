@@ -32,4 +32,20 @@ public:
     WebNNRoPEFusion();
 };
 
+/// After WebNNRoPEFusion creates RoPE(data, gathered_cos, gathered_sin),
+/// this pass detects that cos/sin inputs come from Gather(table, position_ids, axis)
+/// and folds the Gather into the RoPE kernel (using gather_position_arg_id=3).
+/// Eliminates 2 GPU Gather kernel dispatches per RoPE (44 total across Q+K × 22 layers).
+class WebNNRoPEGatherFusionMatcher : public ov::pass::MatcherPass {
+public:
+    OPENVINO_MATCHER_PASS_RTTI("WebNNRoPEGatherFusionMatcher");
+    WebNNRoPEGatherFusionMatcher();
+};
+
+class WebNNRoPEGatherFusion : public ov::pass::GraphRewrite {
+public:
+    OPENVINO_GRAPH_REWRITE_RTTI("WebNNRoPEGatherFusion");
+    WebNNRoPEGatherFusion();
+};
+
 }  // namespace ov::intel_gpu

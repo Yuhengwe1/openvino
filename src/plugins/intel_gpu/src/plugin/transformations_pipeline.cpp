@@ -1497,6 +1497,7 @@ void TransformationsPipeline::apply(std::shared_ptr<ov::Model> func) {
         pass_config->disable<ov::pass::RoPEFusionIOSlicing>();
         pass_config->disable<ov::pass::RoPEShareCosSin>();
         manager.register_pass<ov::intel_gpu::WebNNRoPEFusion>();
+        manager.register_pass<ov::intel_gpu::WebNNRoPEGatherFusion>();
 
         manager.register_pass<ov::intel_gpu::IncreasePositionIdsPrecision>();
         manager.register_pass<ov::intel_gpu::FuseAtan2Decomposed>();
