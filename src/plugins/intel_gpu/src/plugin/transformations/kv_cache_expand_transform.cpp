@@ -38,7 +38,7 @@ KVCacheExpandMatcher::KVCacheExpandMatcher() {
         }
 
         auto kv_cache_node = ov::as_type_ptr<op::KVCache>(reshape_node->get_input_node_shared_ptr(0));
-        
+
         if (!kv_cache_node) {
             GPU_DEBUG_LOG << "[KVCacheExpandMatcher] failed to match reshape pattern with KVCache input, skip expansion" << std::endl;
             return false;
@@ -47,7 +47,7 @@ KVCacheExpandMatcher::KVCacheExpandMatcher() {
         // Check if reshape inserts one dim only
         auto input_shape = reshape_node->get_input_partial_shape(0);
         auto output_shape = reshape_node->get_output_partial_shape(0);
-       
+
         if (input_shape.rank().get_length() >= output_shape.rank().get_length()) {
             GPU_DEBUG_LOG << "[KVCacheExpandMatcher] found unsupported reshape pattern which is not inserting one dim, skip expansion" << std::endl;
             return false;
@@ -91,7 +91,7 @@ KVCacheExpandMatcher::KVCacheExpandMatcher() {
             GPU_DEBUG_LOG << "[KVCacheExpandMatcher] failed to find kv_cache expansion pattern, skip expansion" << std::endl;
             return false;
         }
-        
+
         if (axes.empty())
             return false;
 
